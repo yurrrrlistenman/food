@@ -22,6 +22,11 @@ from typing import List, Tuple, Dict, Any
 import numpy as np
 import streamlit as st
 
+data = None
+vectorizer = None
+X = None
+token_sets = None
+
 PANDAS_REPAIR_NOTE: str | None = None
 
 
@@ -479,7 +484,15 @@ with st.sidebar:
     st.write("• This app never sends your data anywhere — local only.")
 
 # Load dataset according to choice
-with st.spinner("Loading dataset…"):
+global data, vectorizer, X, token_sets
+
+try:
+    with st.spinner("Loading recipes..."):
+        data, vectorizer, X, token_sets = prepare_data(df_raw)
+except Exception as e:
+    st.error(f"❌ Failed to prepare dataset: {e}")
+    st.stop()
+
     df_raw = None
     if data_source == "Use demo (built-in)":
         df_raw = demo_dataset()
@@ -611,20 +624,19 @@ def parse_ingredient_input(s: str) -> List[str]:
             uniq.append(t)
     return uniq
 
-def compute_scores(
-    user_terms: List[str],
-    exclude_terms: List[str],
-    weights: Tuple[float, float, float],
-) -> pd.DataFrame:
-    """Compute similarity + overlap + missing, apply filters, and build result DF."""
-    if len(user_terms) == 0:
+def compute_scores(user_terms, exclude_terms, weights):
+    # Safety checks so Render doesn’t blow up
+    if vectorizer is None or X is None or data is None:
+        st.error("The model is not initialized properly (data/vectorizer/X is None). "
+                 "Check that the dataset loaded correctly on the server.")
         return pd.DataFrame()
 
-    # Vector similarity
+    if not user_terms:
+        return pd.DataFrame()
+
     user_vec = vectorizer.transform([" ".join(user_terms)])
     sims = cosine_similarity(user_vec, X).flatten()
 
-    # Overlap & missing counts (fast loop over precomputed token sets)
     u_set = set(user_terms)
     excl_set = set(exclude_terms)
 
@@ -639,7 +651,6 @@ def compute_scores(
         if excl_set and (len(excl_set & tset) > 0):
             has_excluded[i] = True
 
-    # Fractions
     user_len = max(len(u_set), 1)
     overlap_frac = overlaps / user_len
     missing_frac = missings / user_len
@@ -647,7 +658,6 @@ def compute_scores(
     alpha, beta, gamma = weights
     hybrid = alpha * sims + beta * overlap_frac - gamma * missing_frac
 
-    # Build result frame
     out = data.copy()
     out["similarity"] = sims
     out["overlap"] = overlaps
