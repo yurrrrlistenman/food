@@ -824,6 +824,7 @@ if run:
             has_any_detail = False
             with st.expander("Recipe details"):
                 if "description" in row and isinstance(row["description"], str) and row["description"].strip():
+           
                     st.write(row["description"])
                     has_any_detail = True
 
