@@ -101,6 +101,14 @@ def _reset_stream(handle: Any):
         handle.seek(0)
     except Exception:
         pass
+        
+def demo_df():
+    return pd.DataFrame([
+        {"name": "Fluffy Pancakes",
+         "ingredients_norm": "flour milk egg sugar butter"},
+        {"name": "Tomato Basil Pasta",
+         "ingredients_norm": "pasta tomato garlic olive oil basil"},
+    ])
 
 
 def _is_zip_source(src: Any) -> bool:
