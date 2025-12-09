@@ -365,6 +365,55 @@ def _parse_listish(col: pd.Series) -> List:
         parsed = _safe_literal_eval(x)
         out.append(parsed)
     return out
+    
+@st.cache_data(show_spinner=True)
+def prepare_data(
+    df: pd.DataFrame,
+    max_features: int,
+) -> Tuple[pd.DataFrame, TfidfVectorizer, Any, List[set]]:
+    """
+    Clean, normalize, and vectorize ingredients; return:
+    (data, vectorizer, X, token_sets)
+    """
+    # Make sure we have consistent column names
+    df = _coerce_columns(df)
+    cols = _choose_columns(df)
+
+    if "name" not in cols or "ingredients" not in cols:
+        raise ValueError("CSV must include at least 'name' and 'ingredients' columns.")
+
+    # Keep only relevant columns, drop rows with missing name/ingredients
+    data = df[cols].dropna(subset=["name", "ingredients"]).copy()
+
+    # Build normalized ingredient text + token sets
+    ing_clean_texts: List[str] = []
+    token_sets: List[set] = []
+
+    for raw in data["ingredients"]:
+        s = stringify_ingredient_list(raw)
+        ing_clean_texts.append(s)
+        token_sets.append(set(s.split()))
+
+    data["ingredients_norm"] = ing_clean_texts
+
+    # Optional parsing for tags and steps (if present as stringified lists)
+    if "tags" in data.columns:
+        data["tags_list"] = _parse_listish(data["tags"])
+    if "steps" in data.columns:
+        data["steps_list"] = _parse_listish(data["steps"])
+
+    # Drop rows with empty normalized ingredients
+    data = data[data["ingredients_norm"].str.len() > 0].reset_index(drop=True)
+
+    # TF-IDF vectorizer
+    vectorizer = TfidfVectorizer(
+        stop_words="english",
+        ngram_range=(1, 2),
+        max_features=max_features,
+    )
+    X = vectorizer.fit_transform(data["ingredients_norm"])
+
+    return data, vectorizer, X, token_sets
 
 
 
