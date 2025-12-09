@@ -366,52 +366,6 @@ def _parse_listish(col: pd.Series) -> List:
         out.append(parsed)
     return out
 
-@st.cache_data(show_spinner=True)
-def load_dataset_from_csv(file: str) -> pd.DataFrame:
-    """
-    Load a CSV robustly:
-    - if it's a zip, read the first CSV inside
-    - try utf-8, then latin-1
-    - auto-detect delimiter
-    - skip broken lines instead of crashing
-    - if everything fails, fall back to the demo dataset
-    """
-    # 1) If it's actually a zip (e.g. misnamed .csv), handle that
-    try:
-        if _is_zip_source(file):
-            for enc in ("utf-8", "latin-1"):
-                try:
-                    return _read_csv_from_zip(file, encoding=enc)
-                except Exception:
-                    continue
-    except Exception:
-        # if detection fails, ignore and try normal CSV logic
-        pass
-
-    # 2) Normal CSV: try multiple encodings, flexible parser
-    last_err = None
-    for enc in ("utf-8", "latin-1"):
-        try:
-            return pd.read_csv(
-                file,
-                encoding=enc,
-                sep=None,            # let pandas sniff the delimiter
-                engine="python",     # more forgiving parser
-                on_bad_lines="skip", # skip malformed rows
-            )
-        except (UnicodeDecodeError, pd.errors.ParserError) as e:
-            last_err = e
-            st.warning(f"Parser/encoding error with encoding={enc}: {e}")
-            continue
-        except Exception as e:
-            last_err = e
-            st.warning(f"Unexpected CSV error with encoding={enc}: {e}")
-            continue
-
-    # 3) If we got here, we couldn't load the file -> fall back to demo
-    st.warning(f"⚠️ Could not load {file}. Falling back to demo dataset. Last error: {last_err}")
-    return demo_dataset()
-
 
 
 # -----------------------------
@@ -538,8 +492,8 @@ elif data_source == "Upload CSV" and uploaded is not None:
     df_raw = load_dataset_from_csv(uploaded)
 
 elif data_source == "Use local recipes.csv":
-   #  if os.path.exists("recipes.csv"):
-     #   df_raw = load_dataset_from_csv("recipes.csv")
+    if os.path.exists("recipes.csv"):
+        df_raw = load_dataset_from_csv("recipes.csv")
     elif os.path.exists("RAW_recipes.csv"):
         df_raw = load_dataset_from_csv("RAW_recipes.csv")
     else:
@@ -579,6 +533,7 @@ if row_cap_applied:
         f"⚡ Fast mode active: using the first {fast_mode_cap:,} recipes out of {len(df_raw):,}. "
         "Turn off fast mode in the sidebar to process the full dataset."
     )
+
 
 
 # KPIs
