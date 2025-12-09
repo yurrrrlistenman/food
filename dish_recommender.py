@@ -293,27 +293,33 @@ def stringify_ingredient_list(ing_list) -> str:
 # Data loading
 # -----------------------------
 
-@st.cache_data(show_spinner=False)
-def load_dataset_from_csv(file: Any) -> pd.DataFrame:
-    """Load a CSV, transparently handling misnamed zip archives and encodings."""
-    encodings = ["utf-8", "latin-1"]
-    is_zip = _is_zip_source(file)
-    last_error = None
-
-    for enc in encodings:
+@st.cache_data(show_spinner=True)
+def load_dataset_from_csv(file: str) -> pd.DataFrame:
+    """
+    Load a CSV robustly:
+    - try utf-8, then latin-1
+    - auto-detect delimiter
+    - skip broken lines instead of crashing
+    """
+    for enc in ("utf-8", "latin-1"):
         try:
-            if is_zip:
-                return _read_csv_from_zip(file, encoding=enc)
-            if hasattr(file, "seek"):
-                _reset_stream(file)
-            return pd.read_csv(file, encoding=enc)
-        except UnicodeDecodeError as err:
-            last_error = err
+            return pd.read_csv(
+                file,
+                encoding=enc,
+                sep=None,           # let pandas sniff the delimiter
+                engine="python",    # more forgiving parser
+                on_bad_lines="skip" # skip malformed rows
+            )
+        except UnicodeDecodeError:
+            # try next encoding
+            continue
+        except pd.errors.ParserError as e:
+            # show a warning and keep trying
+            st.warning(f"Parser error with encoding={enc}: {e}")
             continue
 
-    if last_error:
-        raise last_error
-    raise ValueError("Unable to read CSV with available encodings.")
+    st.error(f"❌ Could not read {file} with utf-8 or latin-1.")
+    st.stop()
 
 def _choose_columns(df: pd.DataFrame) -> List[str]:
     base_cols = ["name", "ingredients"]
