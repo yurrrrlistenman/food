@@ -341,23 +341,66 @@ def load_dataset_from_csv(file: str) -> pd.DataFrame:
 
 
 def _choose_columns(df: pd.DataFrame) -> List[str]:
+    """
+    Decide which columns to keep from the loaded CSV.
+    Requires 'name' and 'ingredients' AFTER _coerce_columns has run.
+    """
     base_cols = ["name", "ingredients"]
     optional = ["minutes", "n_steps", "n_ingredients", "tags", "description", "steps", "rating", "n_reviews"]
-    cols = [c for c in base_cols if c in df.columns] + [c for c in optional if c in df.columns]
-    # Try RAW_recipes.csv column names fallback
-    if "name" not in cols and "title" in df.columns:
-        cols.append("title")
-    if "ingredients" not in cols and "ingredient" in df.columns:
-        cols.append("ingredient")
+
+    cols: List[str] = []
+    for c in base_cols:
+        if c in df.columns:
+            cols.append(c)
+    for c in optional:
+        if c in df.columns:
+            cols.append(c)
+
     return cols
 
+
 def _coerce_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # Unify title/name + ingredient column names if needed
-    if "name" not in df.columns and "title" in df.columns:
-        df = df.rename(columns={"title": "name"})
-    if "ingredients" not in df.columns and "ingredient" in df.columns:
-        df = df.rename(columns={"ingredient": "ingredients"})
+    """
+    Try to standardize column names so we always end up with:
+      - 'name'       = recipe title/name
+      - 'ingredients' = ingredient list / parts
+    Works case-insensitively and handles several common variants.
+    """
+    # Map lowercase -> original name
+    lower_to_original = {c.lower(): c for c in df.columns}
+
+    # --- Name/title column ---
+    if "name" not in df.columns:
+        name_candidates = [
+            "name",
+            "title",
+            "recipe",
+            "recipename",
+            "recipe_name",
+            "dish",
+        ]
+        for key in name_candidates:
+            if key in lower_to_original:
+                df = df.rename(columns={lower_to_original[key]: "name"})
+                break
+
+    # --- Ingredients column ---
+    if "ingredients" not in df.columns:
+        ing_candidates = [
+            "ingredients",
+            "ingredient",
+            "ingredient_list",
+            "ingredients_list",
+            "recipeingredientparts",
+            "recipe_ingredients",
+        ]
+        for key in ing_candidates:
+            if key in lower_to_original:
+                df = df.rename(columns={lower_to_original[key]: "ingredients"})
+                break
+
     return df
+
 
 def _parse_listish(col: pd.Series) -> List:
     out = []
