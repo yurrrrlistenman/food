@@ -297,29 +297,48 @@ def stringify_ingredient_list(ing_list) -> str:
 def load_dataset_from_csv(file: str) -> pd.DataFrame:
     """
     Load a CSV robustly:
+    - if it's a zip, read the first CSV inside
     - try utf-8, then latin-1
     - auto-detect delimiter
     - skip broken lines instead of crashing
+    - if everything fails, fall back to the demo dataset
     """
+    # 1) If it's actually a zip (e.g. misnamed .csv), handle that
+    try:
+        if _is_zip_source(file):
+            for enc in ("utf-8", "latin-1"):
+                try:
+                    return _read_csv_from_zip(file, encoding=enc)
+                except Exception:
+                    continue
+    except Exception:
+        # if detection fails, ignore and try normal CSV logic
+        pass
+
+    # 2) Normal CSV: try multiple encodings, flexible parser
+    last_err = None
     for enc in ("utf-8", "latin-1"):
         try:
             return pd.read_csv(
                 file,
                 encoding=enc,
-                sep=None,           # let pandas sniff the delimiter
-                engine="python",    # more forgiving parser
-                on_bad_lines="skip" # skip malformed rows
+                sep=None,            # let pandas sniff the delimiter
+                engine="python",     # more forgiving parser
+                on_bad_lines="skip", # skip malformed rows
             )
-        except UnicodeDecodeError:
-            # try next encoding
+        except (UnicodeDecodeError, pd.errors.ParserError) as e:
+            last_err = e
+            st.warning(f"Parser/encoding error with encoding={enc}: {e}")
             continue
-        except pd.errors.ParserError as e:
-            # show a warning and keep trying
-            st.warning(f"Parser error with encoding={enc}: {e}")
+        except Exception as e:
+            last_err = e
+            st.warning(f"Unexpected CSV error with encoding={enc}: {e}")
             continue
 
-    st.error(f"❌ Could not read {file} with utf-8 or latin-1.")
-    st.stop()
+    # 3) If we got here, we couldn't load the file -> fall back to demo
+    st.warning(f"⚠️ Could not load {file}. Falling back to demo dataset. Last error: {last_err}")
+    return demo_dataset()
+
 
 def _choose_columns(df: pd.DataFrame) -> List[str]:
     base_cols = ["name", "ingredients"]
@@ -498,40 +517,60 @@ with st.sidebar:
     st.write("• This app never sends your data anywhere — local only.")
 
 # Load dataset according to choice
-global data, vectorizer, X, token_sets
+# -----------------------------
+# Load dataset according to choice & build model
+# -----------------------------
+df_raw = None
 
-try:
-    with st.spinner("Loading recipes..."):
-        data, vectorizer, X, token_sets = prepare_data(df_raw)
-except Exception as e:
-    st.error(f"❌ Failed to prepare dataset: {e}")
-    st.stop()
+if data_source == "Use demo (built-in)":
+    df_raw = demo_dataset()
 
-    df_raw = None
-    if data_source == "Use demo (built-in)":
-        df_raw = demo_dataset()
-    elif data_source == "Upload CSV" and uploaded is not None:
-        df_raw = load_dataset_from_csv(uploaded)
-    elif data_source == "Use local recipes.csv":
-        if os.path.exists("recipes.csv"):
-            df_raw = load_dataset_from_csv("recipes.csv")
-        elif os.path.exists("RAW_recipes.csv"):
-            df_raw = load_dataset_from_csv("RAW_recipes.csv")
-        else:
-            st.warning("No local file found. Upload a CSV or switch to the demo dataset in the sidebar.")
+elif data_source == "Upload CSV" and uploaded is not None:
+    df_raw = load_dataset_from_csv(uploaded)
+
+elif data_source == "Use local recipes.csv":
+    if os.path.exists("recipes.csv"):
+        df_raw = load_dataset_from_csv("recipes.csv")
+    elif os.path.exists("RAW_recipes.csv"):
+        df_raw = load_dataset_from_csv("RAW_recipes.csv")
     else:
-        if data_source == "Upload CSV":
-            st.info("← Please upload a CSV to continue, or switch to demo.")
-        # df_raw remains None
+        st.warning("No local recipes.csv or RAW_recipes.csv found. Falling back to demo dataset.")
+        df_raw = demo_dataset()
 
+else:
+    if data_source == "Upload CSV":
+        st.info("← Please upload a CSV to continue, or switch to demo.")
+        st.stop()
+    else:
+        st.warning("No dataset selected. Falling back to demo dataset.")
+        df_raw = demo_dataset()
+
+# If for any reason df_raw is still None or empty, use demo
 if df_raw is None or len(df_raw) == 0:
-    st.stop()
+    st.warning("Loaded dataset is empty. Falling back to demo dataset.")
+    df_raw = demo_dataset()
 
+# Apply fast-mode row cap
 df_for_processing = df_raw
 row_cap_applied = False
 if fast_mode and fast_mode_cap > 0 and len(df_raw) > fast_mode_cap:
     df_for_processing = df_raw.head(int(fast_mode_cap)).copy()
     row_cap_applied = True
+
+# Prepare data (normalize + vectorize)
+try:
+    with st.spinner("Preparing and vectorizing recipes..."):
+        data, vectorizer, X, token_sets = prepare_data(df_for_processing, int(tfidf_max_features))
+except Exception as e:
+    st.error(f"❌ Error preparing data: {e}")
+    st.stop()
+
+if row_cap_applied:
+    st.info(
+        f"⚡ Fast mode active: using the first {fast_mode_cap:,} recipes out of {len(df_raw):,}. "
+        "Turn off fast mode in the sidebar to process the full dataset."
+    )
+
 
 # Prepare data (normalize + vectorize)
 try:
