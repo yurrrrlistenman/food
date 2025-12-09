@@ -367,41 +367,51 @@ def _parse_listish(col: pd.Series) -> List:
     return out
 
 @st.cache_data(show_spinner=True)
-def prepare_data(
-    df: pd.DataFrame,
-    max_features: int,
-) -> Tuple[pd.DataFrame, TfidfVectorizer, Any, List[set]]:
-    """Clean, normalize, and vectorize ingredients; return (data, vectorizer, X, token_sets)."""
-    df = _coerce_columns(df)
-    cols = _choose_columns(df)
-    if "name" not in cols or "ingredients" not in cols:
-        raise ValueError("CSV must include at least 'name' and 'ingredients' columns.")
+def load_dataset_from_csv(file: str) -> pd.DataFrame:
+    """
+    Load a CSV robustly:
+    - if it's a zip, read the first CSV inside
+    - try utf-8, then latin-1
+    - auto-detect delimiter
+    - skip broken lines instead of crashing
+    - if everything fails, fall back to the demo dataset
+    """
+    # 1) If it's actually a zip (e.g. misnamed .csv), handle that
+    try:
+        if _is_zip_source(file):
+            for enc in ("utf-8", "latin-1"):
+                try:
+                    return _read_csv_from_zip(file, encoding=enc)
+                except Exception:
+                    continue
+    except Exception:
+        # if detection fails, ignore and try normal CSV logic
+        pass
 
-    data = df[cols].dropna(subset=["name", "ingredients"]).copy()
+    # 2) Normal CSV: try multiple encodings, flexible parser
+    last_err = None
+    for enc in ("utf-8", "latin-1"):
+        try:
+            return pd.read_csv(
+                file,
+                encoding=enc,
+                sep=None,            # let pandas sniff the delimiter
+                engine="python",     # more forgiving parser
+                on_bad_lines="skip", # skip malformed rows
+            )
+        except (UnicodeDecodeError, pd.errors.ParserError) as e:
+            last_err = e
+            st.warning(f"Parser/encoding error with encoding={enc}: {e}")
+            continue
+        except Exception as e:
+            last_err = e
+            st.warning(f"Unexpected CSV error with encoding={enc}: {e}")
+            continue
 
-    # Clean + normalized text for vectorizer, and compute token sets for overlap calc
-    ing_clean_texts, token_sets = [], []
-    for raw in data["ingredients"]:
-        s = stringify_ingredient_list(raw)
-        ing_clean_texts.append(s)
-        token_sets.append(set(s.split()))
+    # 3) If we got here, we couldn't load the file -> fall back to demo
+    st.warning(f"⚠️ Could not load {file}. Falling back to demo dataset. Last error: {last_err}")
+    return demo_dataset()
 
-    data["ingredients_norm"] = ing_clean_texts
-
-    # Optional parsing for tags + steps (if present as stringified lists)
-    if "tags" in data.columns:
-        data["tags_list"] = _parse_listish(data["tags"])
-    if "steps" in data.columns:
-        data["steps_list"] = _parse_listish(data["steps"])
-
-    # Drop rows with empty normalized ingredients
-    data = data[data["ingredients_norm"].str.len() > 0].reset_index(drop=True)
-
-    # TF-IDF
-    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), max_features=max_features)
-    X = vectorizer.fit_transform(data["ingredients_norm"])
-
-    return data, vectorizer, X, token_sets
 
 
 # -----------------------------
@@ -516,7 +526,6 @@ with st.sidebar:
     st.write("• Kaggle Food.com dataset compatible (RAW_recipes.csv or your recipes.csv)")
     st.write("• This app never sends your data anywhere — local only.")
 
-# Load dataset according to choice
 # -----------------------------
 # Load dataset according to choice & build model
 # -----------------------------
@@ -529,8 +538,8 @@ elif data_source == "Upload CSV" and uploaded is not None:
     df_raw = load_dataset_from_csv(uploaded)
 
 elif data_source == "Use local recipes.csv":
-    if os.path.exists("recipes.csv"):
-        df_raw = load_dataset_from_csv("recipes.csv")
+   #  if os.path.exists("recipes.csv"):
+     #   df_raw = load_dataset_from_csv("recipes.csv")
     elif os.path.exists("RAW_recipes.csv"):
         df_raw = load_dataset_from_csv("RAW_recipes.csv")
     else:
@@ -571,19 +580,6 @@ if row_cap_applied:
         "Turn off fast mode in the sidebar to process the full dataset."
     )
 
-
-# Prepare data (normalize + vectorize)
-try:
-    data, vectorizer, X, token_sets = prepare_data(df_for_processing, int(tfidf_max_features))
-except Exception as e:
-    st.error(f"❌ Error preparing data: {e}")
-    st.stop()
-
-if row_cap_applied:
-    st.info(
-        f"⚡ Fast mode active: using the first {fast_mode_cap:,} recipes out of {len(df_raw):,}. "
-        "Turn off fast mode in the sidebar to process the full dataset."
-    )
 
 # KPIs
 total_recipes = len(data)
@@ -678,16 +674,18 @@ def parse_ingredient_input(s: str) -> List[str]:
     return uniq
 
 def compute_scores(user_terms, exclude_terms, weights):
-    # Safety checks so Render doesn’t blow up
     if vectorizer is None or X is None or data is None:
-        st.error("The model is not initialized properly (data/vectorizer/X is None). "
-                 "Check that the dataset loaded correctly on the server.")
+        st.error("The model is not initialized properly (data/vectorizer/X is None).")
         return pd.DataFrame()
-
     if not user_terms:
+        st.warning("Please enter at least one ingredient.")
         return pd.DataFrame()
 
     user_vec = vectorizer.transform([" ".join(user_terms)])
+    if X.shape[1] == 0:
+        st.error("TF-IDF matrix has 0 features. Check your dataset cleaning.")
+        return pd.DataFrame()
+
     sims = cosine_similarity(user_vec, X).flatten()
 
     u_set = set(user_terms)
