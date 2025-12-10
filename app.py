@@ -9,13 +9,14 @@ import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Global holders
 data = None
 vectorizer = None
 X = None
 token_sets = None
 
 APP_TITLE = "🍳 Ingredient-to-Dish Recommender"
-APP_VERSION = "v3.0"
+APP_VERSION = "v3.1"
 
 st.set_page_config(
     page_title="Dish Recommender",
@@ -55,7 +56,7 @@ st.markdown(
 )
 
 st.title(APP_TITLE)
-st.caption(f"Build {APP_VERSION} — Fixed scoring, local dataset, and full recipe guides.")
+st.caption(f"Build {APP_VERSION} — Local dataset, fixed scoring, and full recipe guides.")
 
 # -----------------------------
 # Text normalisation
@@ -125,13 +126,14 @@ def stringify_ingredient_list(ing_list) -> str:
         return " ".join(tokenize(ing_list))
     return ""
 
+
 # -----------------------------
 # Data loading and preparation
 # -----------------------------
 
-
 @st.cache_data(show_spinner=True)
 def load_dataset_from_csv(path: str) -> pd.DataFrame:
+    """Cached loader for recipes.csv only (no big models here)."""
     last_err = None
     for enc in ("utf-8", "latin-1"):
         try:
@@ -149,6 +151,7 @@ def load_dataset_from_csv(path: str) -> pd.DataFrame:
 
 
 def _coerce_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Map various column name variants to standard names."""
     lower_to_original = {c.lower(): c for c in df.columns}
 
     if "name" not in df.columns:
@@ -226,8 +229,11 @@ def _parse_listish(col: pd.Series) -> List:
     return out
 
 
-@st.cache_data(show_spinner=True)
 def prepare_data(df: pd.DataFrame, max_features: int) -> Tuple[pd.DataFrame, TfidfVectorizer, Any, List[set]]:
+    """
+    Clean, normalize, and vectorize ingredients.
+    No caching here to avoid multiple big models piling up in memory.
+    """
     df = _coerce_columns(df)
     cols = _choose_columns(df)
     if "name" not in cols or "ingredients" not in cols:
@@ -236,21 +242,21 @@ def prepare_data(df: pd.DataFrame, max_features: int) -> Tuple[pd.DataFrame, Tfi
             f"Found columns (after coercion): {list(df.columns)}"
         )
 
-    data = df[cols].dropna(subset=["name", "ingredients"]).copy()
+    data_local = df[cols].dropna(subset=["name", "ingredients"]).copy()
 
     ing_clean_texts, token_sets_local = [], []
-    for raw in data["ingredients"]:
+    for raw in data_local["ingredients"]:
         s = stringify_ingredient_list(raw)
         ing_clean_texts.append(s)
         token_sets_local.append(set(s.split()))
-    data["ingredients_norm"] = ing_clean_texts
+    data_local["ingredients_norm"] = ing_clean_texts
 
-    if "tags" in data.columns:
-        data["tags_list"] = _parse_listish(data["tags"])
+    if "tags" in data_local.columns:
+        data_local["tags_list"] = _parse_listish(data_local["tags"])
 
-    if "steps" in data.columns:
+    if "steps" in data_local.columns:
         parsed_steps = []
-        for val in data["steps"]:
+        for val in data_local["steps"]:
             v = _safe_literal_eval(val)
             if isinstance(v, list):
                 parsed_steps.append(v)
@@ -259,53 +265,48 @@ def prepare_data(df: pd.DataFrame, max_features: int) -> Tuple[pd.DataFrame, Tfi
                 parsed_steps.append(parts)
             else:
                 parsed_steps.append([])
-        data["steps_list"] = parsed_steps
+        data_local["steps_list"] = parsed_steps
 
-    data = data[data["ingredients_norm"].str.len() > 0].reset_index(drop=True)
+    data_local = data_local[data_local["ingredients_norm"].str.len() > 0].reset_index(drop=True)
 
+    # Use float32 to reduce memory
     vectorizer_local = TfidfVectorizer(
         stop_words="english",
         ngram_range=(1, 2),
         max_features=max_features,
+        dtype=np.float32,
     )
-    X_local = vectorizer_local.fit_transform(data["ingredients_norm"])
+    X_local = vectorizer_local.fit_transform(data_local["ingredients_norm"])
 
-    return data, vectorizer_local, X_local, token_sets_local
+    return data_local, vectorizer_local, X_local, token_sets_local
+
 
 # -----------------------------
-# Sidebar controls (no data source, no scoring weights)
+# "Settings" section (was sidebar)
 # -----------------------------
-with st.sidebar:
+with st.expander("⚙️ Settings", expanded=False):
     st.subheader("Performance")
     fast_mode = st.checkbox(
         "Fast mode (limit rows for quicker loading)",
         value=True,
-        help="Process only the first N rows to reduce build time.",
+        help="Process only the first N rows to reduce build time and memory.",
     )
     fast_mode_cap = st.number_input(
         "Rows to process in fast mode",
         min_value=1000,
         max_value=500000,
-        value=25000,
+        value=15000,  # lowered default for memory
         step=1000,
     )
     tfidf_max_features = st.slider(
         "TF-IDF feature cap",
         min_value=5000,
         max_value=60000,
-        value=30000,
+        value=20000,  # lowered default for memory
         step=5000,
     )
+    st.caption("Built with Streamlit + scikit‑learn using the local `recipes.csv` file.")
 
-    st.markdown("---")
-    st.subheader("Filters")
-    max_missing = st.slider("Max missing ingredients (per recipe)", 0, 50, 10, 1)
-
-    st.markdown("---")
-    st.subheader("About")
-    st.write("• Uses a local `recipes.csv` file")
-    st.write("• Fixed scoring: similarity + overlap − missing penalty")
-    st.write("• Built with Streamlit + scikit‑learn")
 
 # -----------------------------
 # Load local recipes.csv and build model
@@ -344,12 +345,12 @@ with st.container():
     k1, k2, k3 = st.columns(3)
     k1.markdown(f"<div class='kpi'><b>Recipes</b><br>{total_recipes:,}</div>", unsafe_allow_html=True)
     has_time = "minutes" in data.columns
-    has_steps = "n_steps" in data.columns
+    has_steps_col = "n_steps" in data.columns
     has_n_ings = "n_ingredients" in data.columns
     k2.markdown(
         f"<div class='kpi'><b>Fields</b><br>"
         f"{'⏱️ minutes ' if has_time else ''}"
-        f"{'📝 steps ' if has_steps else ''}"
+        f"{'📝 steps ' if has_steps_col else ''}"
         f"{'🥘 ingredients ' if has_n_ings else ''}</div>",
         unsafe_allow_html=True,
     )
@@ -382,6 +383,8 @@ with right:
     st.subheader("Result options")
     top_n = st.number_input("Number of results", 1, 50, 10, step=1)
 
+    max_missing = st.slider("Max missing ingredients (per recipe)", 0, 50, 10, 1)
+
     max_time = None
     if "minutes" in data.columns:
         max_time = st.slider("Max time (minutes)", 0, int(np.nanmax(data["minutes"])), 60, 5)
@@ -409,11 +412,10 @@ with right:
                 break
         tag_filter = st.multiselect("Tags contain any of:", sorted(all_tags))
 
+
 # -----------------------------
 # Recommendation logic
 # -----------------------------
-
-
 def parse_ingredient_input(s: str) -> List[str]:
     parts = [p.strip() for p in s.split(",") if p.strip()]
     toks = []
@@ -461,7 +463,7 @@ def compute_scores(user_terms, exclude_terms) -> pd.DataFrame:
     overlap_frac = overlaps / user_len
     missing_frac = missings / user_len
 
-    # Fixed weights (no UI sliders)
+    # Fixed weights (no sliders): tuned for sensible behavior
     alpha, beta, gamma = 0.7, 0.25, 0.1
     hybrid = alpha * sims + beta * overlap_frac - gamma * missing_frac
 
@@ -481,7 +483,7 @@ def apply_filters(
     df: pd.DataFrame,
     max_missing_ing: int,
     max_minutes,
-    max_steps,
+    max_steps_local,
     max_ing_count,
     required_tags: List[str],
 ) -> pd.DataFrame:
@@ -490,8 +492,8 @@ def apply_filters(
 
     if max_minutes is not None and "minutes" in filt.columns:
         filt = filt[pd.to_numeric(filt["minutes"], errors="coerce").fillna(np.inf) <= max_minutes]
-    if max_steps is not None and "n_steps" in filt.columns:
-        filt = filt[pd.to_numeric(filt["n_steps"], errors="coerce").fillna(np.inf) <= max_steps]
+    if max_steps_local is not None and "n_steps" in filt.columns:
+        filt = filt[pd.to_numeric(filt["n_steps"], errors="coerce").fillna(np.inf) <= max_steps_local]
     if max_ing_count is not None and "n_ingredients" in filt.columns:
         filt = filt[pd.to_numeric(filt["n_ingredients"], errors="coerce").fillna(np.inf) <= max_ing_count]
 
@@ -503,6 +505,7 @@ def apply_filters(
         filt = filt[mask]
 
     return filt
+
 
 # -----------------------------
 # Run search
@@ -521,9 +524,9 @@ if run:
         filtered = apply_filters(
             raw_scores,
             max_missing_ing=max_missing,
-            max_minutes=max_time if "minutes" in data.columns else None,
-            max_steps=max_steps if "n_steps" in data.columns else None,
-            max_ing_count=max_ings if "n_ingredients" in data.columns else None,
+            max_minutes=max_time if has_time else None,
+            max_steps_local=max_steps if has_steps_col else None,
+            max_ing_count=max_ings if has_n_ings else None,
             required_tags=tag_filter,
         )
 
@@ -549,12 +552,12 @@ if run:
             sorted_df = filtered.sort_values(["overlap", "similarity"], ascending=[False, False])
         elif sort_choice == "Fewest Missing":
             sorted_df = filtered.sort_values(["missing", "similarity"], ascending=[True, False])
-        elif sort_choice == "Quickest Time" and "minutes" in filtered.columns:
+        elif sort_choice == "Quickest Time" and has_time:
             sorted_df = filtered.sort_values(["minutes", "similarity"], ascending=[True, False])
-        elif sort_choice == "Easiest Steps" and "n_steps" in filtered.columns:
+        elif sort_choice == "Easiest Steps" and has_steps_col:
             sorted_df = filtered.sort_values(["n_steps", "similarity"], ascending=[True, False])
-        elif sort_choice == "Simplest (# ingredients)" and "n_ingredients" in filtered.columns:
-            sorted_df = filtered.sort_values(["n_ingredients", "similarity"], ascending=[True, False])
+        elif sort_choice == "Simplest (# ingredients)" and has_n_ings:
+            sorted_df = sorted_df = filtered.sort_values(["n_ingredients", "similarity"], ascending=[True, False])
         else:
             sorted_df = filtered.sort_values("score", ascending=False)
 
