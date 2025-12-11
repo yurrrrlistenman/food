@@ -23,7 +23,14 @@ st.set_page_config(
     page_icon="🍳",
     layout="wide",
 )
-
+# -----------------------------
+# Google AdSense injection
+# -----------------------------
+adsense_code = """
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2965987453887789"
+     crossorigin="anonymous"></script>
+"""
+st.markdown(adsense_code, unsafe_allow_html=True)
 # -----------------------------
 # Styling
 # -----------------------------
