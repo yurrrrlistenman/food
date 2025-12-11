@@ -207,6 +207,14 @@ def _choose_columns(df: pd.DataFrame) -> List[str]:
             cols.append(c)
     return cols
 
+def _coerce_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # Unify title/name + ingredient column names if needed
+    if "name" not in df.columns and "title" in df.columns:
+        df = df.rename(columns={"title": "name"})
+    if "ingredients" not in df.columns and "ingredient" in df.columns:
+        df = df.rename(columns={"ingredient": "ingredients"})
+    return df
+
 
 def _parse_listish(col: pd.Series) -> List:
     out = []
