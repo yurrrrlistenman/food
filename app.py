@@ -139,71 +139,51 @@ def stringify_ingredient_list(ing_list) -> str:
 # -----------------------------
 
 @st.cache_data(show_spinner=True)
-def load_dataset_from_csv(path: str) -> pd.DataFrame:
-    """Cached loader for recipes.csv only (no big models here)."""
+def load_dataset_from_csv(file: str) -> pd.DataFrame:
+    """
+    Load a CSV robustly:
+    - if it's actually a zip, read the first CSV inside
+    - try utf-8, then latin-1
+    - auto-detect delimiter
+    - skip broken lines instead of crashing
+    - if everything fails, fall back to the demo dataset
+    """
+    # 1) If it's actually a zip (e.g. misnamed .csv), handle that
+    try:
+        if _is_zip_source(file):
+            for enc in ("utf-8", "latin-1"):
+                try:
+                    return _read_csv_from_zip(file, encoding=enc)
+                except Exception:
+                    continue
+    except Exception:
+        # if detection fails, ignore and try normal CSV logic
+        pass
+
+    # 2) Normal CSV: try multiple encodings, flexible parser
     last_err = None
     for enc in ("utf-8", "latin-1"):
         try:
             return pd.read_csv(
-                path,
+                file,
                 encoding=enc,
-                engine="python",
-                on_bad_lines="skip",
+                sep=None,            # let pandas sniff the delimiter
+                engine="python",     # more forgiving parser
+                on_bad_lines="skip", # skip malformed rows
             )
+        except (UnicodeDecodeError, pd.errors.ParserError) as e:
+            last_err = e
+            st.warning(f"Parser/encoding error with encoding={enc}: {e}")
+            continue
         except Exception as e:
             last_err = e
+            st.warning(f"Unexpected CSV error with encoding={enc}: {e}")
             continue
-    st.error(f"Could not read {path}. Last error: {last_err}")
-    st.stop()
 
+    # 3) If we got here, we couldn't load the file -> fall back to demo
+    st.warning(f"⚠️ Could not load {file}. Falling back to demo dataset. Last error: {last_err}")
+    return demo_dataset()
 
-def _coerce_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Map various column name variants to standard names."""
-    lower_to_original = {c.lower(): c for c in df.columns}
-
-    if "name" not in df.columns:
-        name_candidates = [
-            "name",
-            "title",
-            "recipename",
-            "recipe_name",
-            "dish",
-            "label",
-        ]
-        for key in name_candidates:
-            if key in lower_to_original:
-                df = df.rename(columns={lower_to_original[key]: "name"})
-                break
-
-    if "ingredients" not in df.columns:
-        ing_candidates = [
-            "ingredients",
-            "ingredient",
-            "ingredient_list",
-            "ingredients_list",
-            "recipeingredientparts",
-            "recipe_ingredients",
-        ]
-        for key in ing_candidates:
-            if key in lower_to_original:
-                df = df.rename(columns={lower_to_original[key]: "ingredients"})
-                break
-
-    if "description" not in df.columns:
-        desc_candidates = ["description", "summary", "desc", "short_description"]
-        for key in desc_candidates:
-            if key in lower_to_original:
-                df = df.rename(columns={lower_to_original[key]: "description"})
-                break
-
-    if "steps" not in df.columns:
-        steps_candidates = ["steps", "instructions", "directions", "recipeinstructions"]
-        for key in steps_candidates:
-            if key in lower_to_original:
-                df = df.rename(columns={lower_to_original[key]: "steps"})
-                break
-
-    return df
 
 
 def _choose_columns(df: pd.DataFrame) -> List[str]:
